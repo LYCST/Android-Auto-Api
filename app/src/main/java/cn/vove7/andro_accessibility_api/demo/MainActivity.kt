@@ -44,6 +44,7 @@ class MainActivity : AppCompatActivity() {
             SendImeAction(),
             ContinueGestureAction(),
             ScreenshotAction(),
+            XiaohongshuDataExtractAction(),
             object : Action() {
                 override val name = "Stop"
                 override suspend fun run(act: ComponentActivity) {

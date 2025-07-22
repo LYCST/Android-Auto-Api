@@ -44,17 +44,17 @@ class XiaohongshuSearchAction : Action() {
             toast("未找到搜索按钮")
             return
         }
-        
+
         searchButton.tryClick()
         toast("点击搜索按钮")
         delay(2000)
-        
+
         val searchInput = findSearchInput()
         if (searchInput == null) {
             toast("未找到搜索输入框")
             return
         }
-        
+
         searchInput.tryClick()
         delay(500)
         editor().require().apply {
@@ -62,7 +62,7 @@ class XiaohongshuSearchAction : Action() {
         }
         toast("输入关键字：${SEARCH_KEYWORD}")
         delay(1000)
-        
+
         val confirmSearch = findConfirmSearchButton()
         if (confirmSearch != null) {
             confirmSearch.tryClick()
@@ -71,16 +71,16 @@ class XiaohongshuSearchAction : Action() {
             AutoApi.sendKeyCode(KeyEvent.KEYCODE_ENTER)
             toast("按Enter键搜索")
         }
-        
+
         delay(3000)
         toast("搜索完成，等待结果刷新")
-        
+
         val firstItem = findFirstSearchResult()
         if (firstItem == null) {
             toast("未找到搜索结果项目")
             return
         }
-        
+
         firstItem.tryClick()
         toast("点击第一个搜索结果")
         delay(3000)
@@ -168,19 +168,10 @@ class XiaohongshuSearchAction : Action() {
 
     private suspend fun extractNoteData() {
         toast("开始抓取笔记数据")
-
-        // 先打印所有屏幕元素用于调试
-        debugPrintAllScreenElements()
-
-        val title = extractNoteTitle()
-        val content = extractNoteContent()
         val imageCount = extractImageCount()
         val isVideo = detectVideoNote()
-
-        toast("标题: ${title}")
-        delay(1000)
-        toast("内容: ${content.take(50)}...")
-        delay(1000)
+        // 先打印所有屏幕元素用于调试
+        debugPrintAllScreenElements()
 
         if (isVideo) {
             toast("检测到视频笔记")
@@ -191,83 +182,243 @@ class XiaohongshuSearchAction : Action() {
             toast("单张图片笔记")
         }
 
+        // 先尝试直接提取内容
+        debugPrintAllScreenElements()
+        var title = extractNoteTitle()
+        var content = extractNoteContent()
+
+        // 如果没找到标题或内容，尝试下滑后再提取
+        if (title == "未找到标题" || content == "未找到内容") {
+            toast("第一次提取未找到完整内容，尝试下滑后重新提取")
+            swipeViewDown()
+            delay(3000)
+            debugPrintAllScreenElements()
+
+            // 重新提取
+            if (title == "未找到标题") {
+                title = extractNoteTitle()
+            }
+            if (content == "未找到内容") {
+                content = extractNoteContent()
+            }
+        }
+
+        toast("标题: ${title}")
+        delay(1000)
+        toast("内容: ${content.take(50)}...")
+        delay(1000)
+
         toast("数据抓取完成")
     }
 
     private suspend fun debugPrintAllScreenElements() {
-        toast("开始分析笔记页面所有文本元素...")
+        toast("开始深度递归分析笔记页面所有元素...")
         delay(1000)
 
-        val allTextElements = findAllWith { node ->
-            !node.text?.toString().isNullOrBlank() ||
-            !node.contentDescription.isNullOrBlank()
+        // 1. 特别关注 RecyclerView 和其子项的递归分析
+        Log.i(TAG, "=== 小红书笔记页面深度递归分析 ===")
+        
+        // 2. 先找到所有 RecyclerView
+        val recyclerViews = findAllWith { node ->
+            node.className?.contains("RecyclerView") == true
         }
+        
+        Log.i(TAG, "找到 ${recyclerViews.size} 个 RecyclerView")
+        
+        // 3. 递归分析每个 RecyclerView 的内容
+        recyclerViews.forEachIndexed { rvIndex, recyclerView ->
+            Log.i(TAG, "=== RecyclerView ${rvIndex + 1} 分析 ===")
+            Log.i(TAG, "RecyclerView: ID=${recyclerView.id} 位置=${recyclerView.bounds} 子项数=${recyclerView.childCount}")
+            
+            // 递归遍历 RecyclerView 的所有子项
+            analyzeRecyclerViewChildren(recyclerView, 0, "RV${rvIndex + 1}")
+        }
+        
+        // 4. 全局所有元素分析（作为补充）
+        val allElements = findAllWith { node -> true }
+        Log.i(TAG, "页面总元素数量: ${allElements.size}")
+        
+        // 5. 专门寻找可能的标题和内容元素
+        val potentialContent = findAllWith { node ->
+            val text = node.text?.toString() ?: ""
+            val desc = node.contentDescription?: ""
+            (text.isNotBlank() && text.length > 5) || desc.isNotBlank()
+        }.sortedWith(compareBy(
+            { node -> if (node.bounds.top < 800) 0 else 1 }, // 优先页面上方
+            { node -> -(node.text?.toString()?.length ?: 0) } // 然后按文本长度
+        ))
 
-        Log.i(TAG, "=== 笔记页面所有元素分析 ===")
-        Log.i(TAG, "总共找到 ${allTextElements.size} 个文本元素")
-
-        allTextElements.forEachIndexed { index, node ->
+        Log.i(TAG, "=== 潜在内容元素分析 ===")
+        potentialContent.take(20).forEachIndexed { index, node ->
+            val text = node.text?.toString() ?: ""
+            val desc = node.desc() ?: ""
+            val bounds = node.bounds
+            
             val info = buildString {
-                append("元素${index + 1}: ")
-                append("文本='${node.text?.toString() ?: ""}' ")
-                append("描述='${node.desc() ?: ""}' ")
-                append("类名='${node.className?.toString() ?: ""}' ")
+                append("潜在内容${index + 1}: ")
+                append("文本='$text' ")
+                append("描述='$desc' ")
+                append("类名='${node.className}' ")
                 append("ID='${try { node.id ?: "" } catch (e: Exception) { "null" }}' ")
-                append("文本长度=${node.text?.toString()?.length ?: 0} ")
-                append("可点击=${node.isClickable()}")
+                append("长度=${text.length} ")
+                append("位置=(${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}) ")
+                append("可见=${node.isVisibleToUser}")
+                
+                // 智能标记
+                when {
+                    text.length in 10..50 && bounds.top < 800 && !text.contains("点赞|收藏|评论|分享".toRegex()) -> 
+                        append(" [疑似标题]")
+                    text.length > 50 && !text.contains("点赞|收藏|评论|分享".toRegex()) -> 
+                        append(" [疑似正文]")
+                    text.matches(Regex("\\d+/\\d+")) -> append(" [图片计数]")
+                    text.contains("点赞|收藏|评论|分享".toRegex()) -> append(" [交互按钮]")
+                }
             }
             Log.i(TAG, info)
             
-            // 对于长度在合理范围内的文本也在 toast 中显示
-            val text = node.text?.toString() ?: ""
-            if (text.isNotBlank() && text.length in 5..100) {
-                toast("文本${index + 1}: ${text}")
-                delay(1500)
+            // Toast 显示重要内容
+            if (text.length > 8 && !text.contains("点赞|收藏|评论|分享".toRegex())) {
+                toast("发现内容: $text")
+                delay(2000)
             }
         }
         
-        Log.i(TAG, "=== 元素分析完成 ===")
-        toast("屏幕元素分析完成，请查看日志")
+        Log.i(TAG, "=== 深度递归分析完成 ===")
+        toast("深度递归分析完成，请查看日志")
         delay(2000)
     }
     
+    private suspend fun analyzeRecyclerViewChildren(parent: ViewNode, depth: Int, prefix: String) {
+        val indent = "  ".repeat(depth)
+        
+        for (i in 0 until parent.childCount) {
+            val child = parent.childAt(i)
+            if (child != null) {
+                val text = child.text?.toString() ?: ""
+                val desc = child.desc() ?: ""
+                val className = child.className ?: ""
+                
+                val info = buildString {
+                    append("${prefix}${indent}子项[$i]: ")
+                    append("文本='$text' ")
+                    append("描述='$desc' ")
+                    append("类名='$className' ")
+                    append("ID='${try { child.id ?: "" } catch (e: Exception) { "null" }}' ")
+                    append("子项数=${child.childCount} ")
+                    append("位置=${child.bounds}")
+                    
+                    // 特别标记可能的标题和正文
+                    if (text.length in 10..100 && !text.contains("点赞|收藏|评论|分享".toRegex())) {
+                        append(" [★可能是标题或正文★]")
+                    }
+                }
+                Log.i(TAG, info)
+                
+                // 如果有重要文本内容，在 toast 中显示
+                if (text.length > 8 && !text.contains("点赞|收藏|评论|分享".toRegex())) {
+                    toast("${prefix}发现: $text")
+                    delay(1500)
+                }
+                
+                // 递归遍历子节点（最多3层深度，避免过深）
+                if (depth < 3 && child.childCount > 0) {
+                    analyzeRecyclerViewChildren(child, depth + 1, prefix)
+                }
+            }
+        }
+    }
+    
     private suspend fun extractNoteTitle(): String {
-        val titleNodes = findAllWith { node ->
-            val text = node.text?.toString()
-            !text.isNullOrBlank() && 
-            text.length > 5 && 
-            text.length < 100 &&
-            !text.contains("点赞") &&
-            !text.contains("收藏") &&
-            !text.contains("评论") &&
-            !text.contains("分享")
+        // 基于发现的规律：标题在深度17的TextView中，通常较短，位置靠上
+        Log.i(TAG, "开始深度递归查找标题...")
+        
+        val rootNode = ViewNode.getRoot()
+        val titleCandidates = findTextAtSpecificDepth(rootNode, 0, 17)
+        
+        Log.i(TAG, "在深度17找到 ${titleCandidates.size} 个TextView元素")
+        
+        // 根据用户提供的标题特征进行过滤和排序
+        val titleNodes = titleCandidates.filter { candidate ->
+            val text = candidate.text
+            val bounds = candidate.bounds
+            
+            !text.isNullOrBlank()
+        }.sortedWith(compareBy(
+            { it.bounds.top },  // 按位置从上到下
+            { it.text?.length ?: 0 }  // 然后按长度从短到长
+        ))
+        
+        titleNodes.forEach { candidate ->
+            val text = candidate.text ?: ""
+            val bounds = candidate.bounds
+            Log.i(TAG, "候选标题[深度${candidate.depth}]: '$text' 位置:(${bounds.left},${bounds.top}) 长度:${text.length}")
         }
         
-        return titleNodes.firstOrNull()?.text?.toString() ?: "未找到标题"
+        val title = titleNodes.firstOrNull()?.text ?: "未找到标题"
+        Log.i(TAG, "最终选择标题: $title")
+        return title
     }
     
     private suspend fun extractNoteContent(): String {
-        val contentBuilder = StringBuilder()
+        // 基于发现的规律：内容在深度17的TextView中，通常较长，位置在标题下方
+        Log.i(TAG, "开始深度递归查找内容...")
         
-        val textNodes = findAllWith { node ->
-            val text = node.text?.toString()
-            !text.isNullOrBlank() && 
-            text.length > 10 &&
-            !text.contains("点赞") &&
-            !text.contains("收藏") &&
-            !text.contains("评论") &&
-            !text.contains("分享") &&
-            !text.contains("关注")
+        val rootNode = ViewNode.getRoot()
+        val contentCandidates = findTextAtSpecificDepth(rootNode, 0, 17)
+        
+        Log.i(TAG, "在深度17找到 ${contentCandidates.size} 个TextView元素用于内容查找")
+
+        
+        // 根据用户提供的内容特征进行过滤和排序
+        val contentNodes = contentCandidates.filter { candidate ->
+            val text = candidate.text
+            val bounds = candidate.bounds
+            
+            !text.isNullOrBlank()
+        }.sortedWith(compareBy(
+            { it.bounds.top }  // 按位置从上到下，取最靠上的内容
+        ))
+
+        val content = contentNodes.lastOrNull()?.text ?: "未找到内容"
+        Log.i(TAG, "最终选择内容: ${content.take(100)}...")
+        return content
+    }
+    
+    private suspend fun findTitleInRecyclerView(recyclerView: ViewNode): String {
+        return findTextInNodeRecursively(recyclerView, 0) { text ->
+            text.length in 8..60 && 
+            !text.contains("点赞|收藏|评论|分享|关注".toRegex())
+        }.firstOrNull() ?: ""
+    }
+    
+    private suspend fun findContentInRecyclerView(recyclerView: ViewNode): String {
+        val contents = findTextInNodeRecursively(recyclerView, 0) { text ->
+            text.length > 20 && 
+            !text.contains("点赞|收藏|评论|分享|关注".toRegex())
+        }
+        return contents.joinToString("\n")
+    }
+    
+    private fun findTextInNodeRecursively(node: ViewNode, depth: Int, filter: (String) -> Boolean): List<String> {
+        val results = mutableListOf<String>()
+        
+        // 检查当前节点
+        val text = node.text?.toString()
+        if (!text.isNullOrBlank() && filter(text)) {
+            results.add(text)
         }
         
-        textNodes.forEach { node ->
-            val text = node.text?.toString()
-            if (!text.isNullOrBlank()) {
-                contentBuilder.append(text).append("\n")
+        // 递归检查子节点（限制深度避免过深）
+        if (depth < 4) {
+            for (i in 0 until node.childCount) {
+                val child = node.childAt(i)
+                if (child != null) {
+                    results.addAll(findTextInNodeRecursively(child, depth + 1, filter))
+                }
             }
         }
         
-        return contentBuilder.toString().trim()
+        return results
     }
     
     private suspend fun extractImageCount(): Int {
@@ -329,6 +480,19 @@ class XiaohongshuSearchAction : Action() {
         
         swipe(startX, centerY, endX, centerY, 500)
     }
+
+    private suspend fun swipeViewDown() {
+        // 获取实际屏幕尺寸
+        val (screenWidth, screenHeight) = getScreenSize()
+
+        toast("屏幕尺寸: ${screenWidth}x${screenHeight}")
+
+        val centerX = screenWidth / 2
+        val startY = screenHeight * 7 / 10
+        val endY = screenHeight * 3 / 10
+
+        swipe(centerX, startY, centerX , endY,  500)
+    }
     
     private fun getScreenSize(): Pair<Int, Int> {
         return when {
@@ -370,5 +534,44 @@ class XiaohongshuSearchAction : Action() {
                 Pair(display.width, display.height)
             }
         }
+    }
+    
+    // 数据类，用于存储深度和节点信息
+    data class DepthTextInfo(
+        val text: String?,
+        val bounds: android.graphics.Rect,
+        val depth: Int,
+        val className: String?
+    )
+    
+    // 递归查找指定深度的TextView元素
+    private fun findTextAtSpecificDepth(node: ViewNode, currentDepth: Int, targetDepth: Int): List<DepthTextInfo> {
+        val results = mutableListOf<DepthTextInfo>()
+        
+        // 如果当前深度等于目标深度，检查是否是TextView
+        if (currentDepth == targetDepth) {
+            if (node.className?.contains("TextView") == true) {
+                val text = node.text?.toString()
+                if (!text.isNullOrBlank() && node.isClickable()) {
+                    Log.i(TAG, " ${node.toString()} ")
+                    results.add(DepthTextInfo(
+                        text = text,
+                        bounds = node.bounds,
+                        depth = currentDepth,
+                        className = node.className
+                    ))
+                }
+            }
+        } else if (currentDepth < targetDepth) {
+            // 继续递归查找子节点
+            for (i in 0 until node.childCount) {
+                val child = node.childAt(i)
+                if (child != null) {
+                    results.addAll(findTextAtSpecificDepth(child, currentDepth + 1, targetDepth))
+                }
+            }
+        }
+        
+        return results
     }
 }

@@ -46,6 +46,8 @@ class MainActivity : AppCompatActivity() {
             ScreenshotAction(),
             XiaohongshuDataExtractAction(),
             XiaohongshuSearchAction(),
+            ClickDebugAction(),
+            UITreeSerializerAction(),
             object : Action() {
                 override val name = "Stop"
                 override suspend fun run(act: ComponentActivity) {

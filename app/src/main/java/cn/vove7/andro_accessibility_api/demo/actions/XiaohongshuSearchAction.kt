@@ -97,12 +97,12 @@ class XiaohongshuSearchAction : Action() {
             node.className?.contains("Button") == true &&
             node.isClickable()
         }.firstOrNull()
-        
+
         if (searchButton != null) {
             toast("找到搜索按钮: ${searchButton.desc()}")
             return searchButton
         }
-        
+
         // 备用搜索策略
         return listOf(
             withText("搜索").findFirst(),
@@ -180,33 +180,35 @@ class XiaohongshuSearchAction : Action() {
             extractMultipleImages(imageCount)
         } else {
             toast("单张图片笔记")
+            // 保存单张图片
+            saveCurrentImage(1)
         }
 
-        // 先尝试直接提取内容
-        debugPrintAllScreenElements()
-        var title = extractNoteTitle()
-        var content = extractNoteContent()
-
-        // 如果没找到标题或内容，尝试下滑后再提取
-        if (title == "未找到标题" || content == "未找到内容") {
-            toast("第一次提取未找到完整内容，尝试下滑后重新提取")
-            swipeViewDown()
-            delay(3000)
-            debugPrintAllScreenElements()
-
-            // 重新提取
-            if (title == "未找到标题") {
-                title = extractNoteTitle()
-            }
-            if (content == "未找到内容") {
-                content = extractNoteContent()
-            }
-        }
-
-        toast("标题: ${title}")
-        delay(1000)
-        toast("内容: ${content.take(50)}...")
-        delay(1000)
+//        // 先尝试直接提取内容
+//        debugPrintAllScreenElements()
+//        var title = extractNoteTitle()
+//        var content = extractNoteContent()
+//
+//        // 如果没找到标题或内容，尝试下滑后再提取
+//        if (title == "未找到标题" || content == "未找到内容") {
+//            toast("第一次提取未找到完整内容，尝试下滑后重新提取")
+//            swipeViewDown()
+//            delay(3000)
+//            debugPrintAllScreenElements()
+//
+//            // 重新提取
+//            if (title == "未找到标题") {
+//                title = extractNoteTitle()
+//            }
+//            if (content == "未找到内容") {
+//                content = extractNoteContent()
+//            }
+//        }
+//
+//        toast("标题: ${title}")
+//        delay(1000)
+//        toast("内容: ${content.take(50)}...")
+//        delay(1000)
 
         toast("数据抓取完成")
     }
@@ -456,16 +458,140 @@ class XiaohongshuSearchAction : Action() {
     }
     
     private suspend fun extractMultipleImages(totalCount: Int) {
-        toast("开始查看所有图片")
+        toast("开始查看并保存所有图片")
+        
+        // 保存第一张图片
+        saveCurrentImage(1)
         
         for (i in 1 until totalCount) {
-            delay(1000)
+            Log.i(TAG, "准备切换到第${i + 1}张图片")
+            delay(1500) // 确保上一次保存操作完全完成
+            
             swipeImageRight()
-            toast("查看第${i + 1}张图片")
-            delay(1500)
+            toast("滑动到第${i + 1}张图片")
+            Log.i(TAG, "滑动完成，等待页面稳定...")
+            
+            delay(2000) // 等待滑动动画完成和UI更新
+            
+            // 验证滑动是否成功（检查图片计数器的变化）
+            val currentImageIndicator = findAllWith { node ->
+                val text = node.text?.toString()
+                text?.matches(Regex("\\d+/${totalCount}")) == true
+            }.firstOrNull()?.text?.toString()
+            
+            if (currentImageIndicator != null) {
+                Log.i(TAG, "当前图片指示器: $currentImageIndicator")
+                toast("当前位置: $currentImageIndicator")
+            }
+            
+            // 保存当前图片
+            saveCurrentImage(i + 1)
         }
         
-        toast("所有图片查看完成")
+        toast("所有图片保存完成")
+    }
+    
+    private suspend fun analyzeImageElements() {
+        Log.i(TAG, "=== 开始分析图片元素 ===")
+        toast("分析当前图片元素...")
+        
+        // 专门查找图片FrameLayout容器
+        val imageFrameLayouts = findAllWith { node ->
+            node.className?.contains("FrameLayout") == true &&
+            (node.contentDescription?.contains("图片") == true)
+        }
+        
+        Log.i(TAG, "找到 ${imageFrameLayouts.size} 个图片FrameLayout容器")
+        
+        imageFrameLayouts.forEachIndexed { index, frameLayout ->
+            val bounds = frameLayout.bounds
+            val desc = frameLayout.desc() ?: ""
+            val className = frameLayout.className ?: ""
+            val resourceId = try { frameLayout.id ?: "" } catch (e: Exception) { "无法获取" }
+            
+            Log.i(TAG, "=== 图片FrameLayout ${index + 1} 详细分析 ===")
+            Log.i(TAG, "FrameLayout: 类名='$className' ID='$resourceId' 描述='$desc'")
+            Log.i(TAG, "位置=(${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}) 大小=${bounds.width()}x${bounds.height()}")
+            Log.i(TAG, "子项数=${frameLayout.childCount} 可见=${frameLayout.isVisibleToUser}")
+            
+            toast("分析图片容器${index + 1}: ${frameLayout.childCount}个子项")
+            
+            // 递归分析FrameLayout的所有子项
+            analyzeFrameLayoutChildren(frameLayout, 0)
+        }
+        
+        // 如果没找到FrameLayout，再用其他方式查找图片元素
+        if (imageFrameLayouts.isEmpty()) {
+            Log.i(TAG, "未找到图片FrameLayout，使用备用方法查找图片...")
+            
+            val imageElements = findAllWith { node ->
+                node.className?.contains("ImageView") == true ||
+                node.className?.contains("Image") == true ||
+                (node.contentDescription?.contains("图片") == true) ||
+                (node.contentDescription?.contains("image") == true) ||
+                (node.text?.toString()?.contains("图片") == true)
+            }
+            
+            Log.i(TAG, "找到 ${imageElements.size} 个图片相关元素")
+            
+            imageElements.forEachIndexed { index, imageNode ->
+                val bounds = imageNode.bounds
+                val desc = imageNode.desc() ?: ""
+                val text = imageNode.text?.toString() ?: ""
+                val className = imageNode.className ?: ""
+                val resourceId = try { imageNode.id ?: "" } catch (e: Exception) { "无法获取" }
+                
+                Log.i(TAG, "图片元素${index + 1}: 类名='$className' ID='$resourceId' 描述='$desc' 位置=${bounds}")
+            }
+        }
+        
+        Log.i(TAG, "=== 图片元素分析完成 ===")
+        delay(1000)
+    }
+    
+    private suspend fun analyzeFrameLayoutChildren(frameLayout: ViewNode, depth: Int) {
+        val indent = "  ".repeat(depth)
+        
+        for (i in 0 until frameLayout.childCount) {
+            val child = frameLayout.childAt(i)
+            if (child != null) {
+                val text = child.text?.toString() ?: ""
+                val desc = child.desc() ?: ""
+                val className = child.className ?: ""
+                val bounds = child.bounds
+                val resourceId = try { child.id ?: "" } catch (e: Exception) { "无法获取" }
+                
+                val childInfo = buildString {
+                    append("${indent}子项[$i]: ")
+                    append("类名='$className' ")
+                    append("ID='$resourceId' ")
+                    append("文本='$text' ")
+                    append("描述='$desc' ")
+                    append("位置=(${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}) ")
+                    append("大小=${bounds.width()}x${bounds.height()} ")
+                    append("子项数=${child.childCount} ")
+                    append("可见=${child.isVisibleToUser} ")
+                    append("可点击=${child.isClickable()}")
+                    
+                    // 特殊标记
+                    when {
+                        className.contains("ImageView") -> append(" [★ImageView★]")
+                        className.contains("Image") -> append(" [★Image★]")
+                        bounds.width() > 500 && bounds.height() > 500 -> append(" [大尺寸]")
+                        child.childCount > 0 -> append(" [有子项]")
+                    }
+                }
+                
+                Log.i(TAG, childInfo)
+                toast("子项${i + 1}: ${className}")
+                delay(800)
+                
+                // 如果子项也有子项，继续递归（限制深度）
+                if (depth < 2 && child.childCount > 0) {
+                    analyzeFrameLayoutChildren(child, depth + 1)
+                }
+            }
+        }
     }
     
     private suspend fun swipeImageRight() {
@@ -573,5 +699,180 @@ class XiaohongshuSearchAction : Action() {
         }
         
         return results
+    }
+    
+    private suspend fun saveCurrentImage(imageNumber: Int) {
+        toast("正在保存第${imageNumber}张图片...")
+        Log.i(TAG, "=== 开始保存图片 $imageNumber ===")
+        
+        try {
+            // 多种策略查找图片容器
+            var imageContainer: ViewNode? = null
+            
+            // 策略1: 查找包含"图片"描述的FrameLayout
+            imageContainer = findAllWith { node ->
+                node.className?.contains("FrameLayout") == true &&
+                (node.contentDescription?.contains("图片") == true)
+            }.firstOrNull()
+            
+            if (imageContainer == null) {
+                Log.i(TAG, "策略1失败，尝试策略2...")
+                // 策略2: 查找大尺寸的FrameLayout（可能是图片容器）
+                imageContainer = findAllWith { node ->
+                    node.className?.contains("FrameLayout") == true &&
+                    node.isVisibleToUser
+                }.sortedByDescending { it.bounds.width() * it.bounds.height() }
+                .firstOrNull()
+            }
+            
+            if (imageContainer == null) {
+                Log.i(TAG, "策略2失败，尝试策略3...")
+                // 策略3: 查找大尺寸的可见FrameLayout（无需检查子项）
+                imageContainer = findAllWith { node ->
+                    node.className?.contains("FrameLayout") == true &&
+                    node.isVisibleToUser
+                }.sortedByDescending { it.bounds.width() * it.bounds.height() }
+                .firstOrNull()
+            }
+            
+            if (imageContainer == null) {
+                Log.i(TAG, "策略3失败，尝试策略4...")
+                // 策略4: 直接查找最大的ImageView
+                imageContainer = findAllWith { node ->
+                    node.className?.contains("ImageView") == true &&
+                    node.isVisibleToUser
+                }.sortedByDescending { it.bounds.width() * it.bounds.height() }
+                .firstOrNull()
+            }
+            
+            if (imageContainer != null) {
+                Log.i(TAG, "找到图片容器: 类名=${imageContainer.className} 描述='${imageContainer.desc()}' 大小=${imageContainer.bounds.width()}x${imageContainer.bounds.height()}")
+                
+                // 长按图片容器中央
+                val bounds = imageContainer.bounds
+                val centerX = bounds.centerX()
+                val centerY = bounds.centerY()
+                
+                toast("长按图片位置: ($centerX, $centerY)")
+                Log.i(TAG, "长按位置: ($centerX, $centerY) 容器大小: ${bounds.width()}x${bounds.height()}")
+                
+                // 执行长按操作
+                longClick(centerX, centerY)
+                
+                // 等待弹窗出现
+                delay(2000)
+                toast("等待保存弹窗出现...")
+                
+                // 查找"保存"按钮
+                val saveButton = findSaveButton()
+                if (saveButton != null) {
+                    saveButton.tryClick()
+                    toast("第${imageNumber}张图片保存成功!")
+                    Log.i(TAG, "图片 $imageNumber 保存成功")
+                    delay(1500) // 等待保存完成
+                } else {
+                    toast("未找到保存按钮")
+                    Log.w(TAG, "未找到保存按钮")
+                    // 按返回键关闭可能的弹窗
+                    back()
+                    delay(1000)
+                }
+            } else {
+                toast("未找到图片容器")
+                Log.w(TAG, "所有策略都无法找到图片容器")
+                
+                // 调试: 列出当前屏幕上的所有FrameLayout和ImageView
+                debugListImageElements()
+            }
+        } catch (e: Exception) {
+            toast("保存图片失败: ${e.message}")
+            Log.e(TAG, "保存图片失败", e)
+        }
+    }
+    
+    private fun hasImageViewChild(node: ViewNode): Boolean {
+        for (i in 0 until node.childCount) {
+            val child = node.childAt(i)
+            if (child != null) {
+                if (child.className?.contains("ImageView") == true) {
+                    return true
+                }
+                // 递归查找子节点
+                if (hasImageViewChild(child)) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+    
+    
+    private suspend fun debugListImageElements() {
+        Log.i(TAG, "=== 调试: 列出所有可能的图片相关元素 ===")
+        
+        // 列出所有FrameLayout
+        val frameLayouts = findAllWith { node ->
+            node.className?.contains("FrameLayout") == true &&
+            node.isVisibleToUser
+        }
+        
+        Log.i(TAG, "找到 ${frameLayouts.size} 个可见的FrameLayout:")
+        frameLayouts.forEachIndexed { index, layout ->
+            val bounds = layout.bounds
+            val desc = layout.desc() ?: ""
+            Log.i(TAG, "FrameLayout${index + 1}: 描述='$desc' 大小=${bounds.width()}x${bounds.height()} 位置=${bounds} 子项=${layout.childCount}")
+        }
+        
+        // 列出所有ImageView
+        val imageViews = findAllWith { node ->
+            node.className?.contains("ImageView") == true &&
+            node.isVisibleToUser
+        }
+        
+        Log.i(TAG, "找到 ${imageViews.size} 个可见的ImageView:")
+        imageViews.forEachIndexed { index, imageView ->
+            val bounds = imageView.bounds
+            val desc = imageView.desc() ?: ""
+            Log.i(TAG, "ImageView${index + 1}: 描述='$desc' 大小=${bounds.width()}x${bounds.height()} 位置=${bounds}")
+        }
+    }
+    
+    private suspend fun findSaveButton(): ViewNode? {
+        // 多种策略查找保存按钮
+        val saveStrategies = listOf<suspend () -> ViewNode?>(
+            { withText("保存").findFirst() },
+            { withText("保存图片").findFirst() },
+            { withText("保存到相册").findFirst() },
+            { withText("下载").findFirst() },
+            { containsText("保存").findFirst() },
+            { containsText("下载").findFirst() },
+            // 查找可点击的元素，描述包含保存
+            { 
+                findAllWith { node ->
+                    node.isClickable() && 
+                    (node.contentDescription?.contains("保存") == true ||
+                     node.text?.toString()?.contains("保存") == true)
+                }.firstOrNull()
+            }
+        )
+        
+        for (strategy in saveStrategies) {
+            val button = strategy()
+            if (button != null) {
+                Log.i(TAG, "找到保存按钮: 文本='${button.text}' 描述='${button.desc()}' 类名=${button.className}")
+                return button
+            }
+        }
+        
+        // 如果都没找到，列出当前屏幕上所有可点击的元素用于调试
+        Log.i(TAG, "=== 保存按钮查找失败，列出所有可点击元素 ===")
+        val clickableElements = findAllWith { node -> node.isClickable() }
+        clickableElements.take(10).forEachIndexed { index, node ->
+            val text = node.text?.toString() ?: ""
+            val desc = node.desc() ?: ""
+            Log.i(TAG, "可点击元素${index + 1}: 文本='$text' 描述='$desc' 类名=${node.className} 位置=${node.bounds}")
+        }
+        
+        return null
     }
 }

@@ -376,6 +376,10 @@ class ClickTextAction : Action() {
 class TraverseAllAction : Action() {
     override val name = "递归搜索视图包含"
     override suspend fun run(act: ComponentActivity) {
+        
+        toast("开始递归搜索，等待5秒...")
+        delay(5000)  // 等待5秒
+        toast("开始搜索视图...")
 
         Log.i(
             "TraverseAllAction",
@@ -384,7 +388,8 @@ class TraverseAllAction : Action() {
             }.joinToString("\n")
         )
         // assert = [ Bottom, SubView ]
-
+        
+        toast("递归搜索完成")
     }
 }
 

@@ -46,6 +46,7 @@ class MainActivity : AppCompatActivity() {
             ScreenshotAction(),
             XiaohongshuDataExtractAction(),
             XiaohongshuSearchAction(),
+            XiaohongshuUserSearchAction(),
             ClickDebugAction(),
             UITreeSerializerAction(),
             object : Action() {

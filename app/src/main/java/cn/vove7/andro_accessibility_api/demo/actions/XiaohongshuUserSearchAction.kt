@@ -14,6 +14,9 @@ import cn.vove7.auto.core.api.*
 import cn.vove7.auto.core.requireAutoService
 import cn.vove7.auto.core.viewnode.ViewNode
 import kotlinx.coroutines.delay
+import cn.vove7.andro_accessibility_api.demo.xiaohongshu.XiaohongshuCommentExtractor
+
+
 
 class XiaohongshuUserSearchAction : Action() {
     
@@ -361,19 +364,24 @@ class XiaohongshuUserSearchAction : Action() {
         Log.i(TAG, "=== 开始抓取第${noteNumber}个笔记 ===")
         
         // 1. 先抓取图片
-        extractNoteImages(noteNumber)
+      //  extractNoteImages(noteNumber)
         
         // 2. 保存图片后，立即获取标题和内容（在原位置）
+       // val title = extractNoteTitle()
+       // val content = extractNoteContent()
         val (title, content) = extractTitleAndContent()
         Log.i(TAG, "笔记${noteNumber} - 标题: $title")
-        Log.i(TAG, "笔记${noteNumber} - 内容: ${content.take(100)}...")
+        Log.i(TAG, "笔记${noteNumber} - 内容: ${content}")
         
         // 3. 获取互动数据（点赞、收藏、评论数）
         val (likes, favorites, comments) = extractInteractionData()
         Log.i(TAG, "笔记${noteNumber} - 点赞: $likes, 收藏: $favorites, 评论: $comments")
         
         // 4. 最后下滑查找评论区并抓取评论
-        extractComments(noteNumber)
+        val commentExtractor = XiaohongshuCommentExtractor()
+        val result = commentExtractor.extractComments()
+
+        Log.i(TAG, "extractSingleNote: ${result}")
         
         toast("第${noteNumber}个笔记数据抓取完成")
     }
@@ -529,7 +537,104 @@ class XiaohongshuUserSearchAction : Action() {
         
         return null
     }
-    
+
+    private suspend fun extractNoteTitle(): String {
+        // 基于发现的规律：标题在深度17的TextView中，通常较短，位置靠上
+        Log.i(TAG, "开始深度递归查找标题...")
+
+        val rootNode = ViewNode.getRoot()
+        val titleCandidates = findTextAtSpecificDepth(rootNode, 0, 17)
+
+        Log.i(TAG, "在深度17找到 ${titleCandidates.size} 个TextView元素")
+
+        // 根据用户提供的标题特征进行过滤和排序
+        val titleNodes = titleCandidates.filter { candidate ->
+            val text = candidate.text
+            val bounds = candidate.bounds
+
+            !text.isNullOrBlank()
+        }.sortedWith(compareBy(
+            { it.bounds.top },  // 按位置从上到下
+            { it.text?.length ?: 0 }  // 然后按长度从短到长
+        ))
+
+        titleNodes.forEach { candidate ->
+            val text = candidate.text ?: ""
+            val bounds = candidate.bounds
+            Log.i(TAG, "候选标题[深度${candidate.depth}]: '$text' 位置:(${bounds.left},${bounds.top}) 长度:${text.length}")
+        }
+
+        val title = titleNodes.firstOrNull()?.text ?: "未找到标题"
+        Log.i(TAG, "最终选择标题: $title")
+        return title
+    }
+
+    private suspend fun extractNoteContent(): String {
+        // 基于发现的规律：内容在深度17的TextView中，通常较长，位置在标题下方
+        Log.i(TAG, "开始深度递归查找内容...")
+
+        val rootNode = ViewNode.getRoot()
+        val contentCandidates = findTextAtSpecificDepth(rootNode, 0, 17)
+
+        Log.i(TAG, "在深度17找到 ${contentCandidates.size} 个TextView元素用于内容查找")
+
+
+        // 根据用户提供的内容特征进行过滤和排序
+        val contentNodes = contentCandidates.filter { candidate ->
+            val text = candidate.text
+            val bounds = candidate.bounds
+
+            !text.isNullOrBlank()
+        }.sortedWith(compareBy(
+            { it.bounds.top }  // 按位置从上到下，取最靠上的内容
+        ))
+
+        val content = contentNodes.lastOrNull()?.text ?: "未找到内容"
+        Log.i(TAG, "最终选择内容: ${content.take(100)}...")
+        return content
+    }
+
+    // 数据类，用于存储深度和节点信息
+    data class DepthTextInfo(
+        val text: String?,
+        val bounds: android.graphics.Rect,
+        val depth: Int,
+        val className: String?
+    )
+
+    // 递归查找指定深度的TextView元素
+    private fun findTextAtSpecificDepth(node: ViewNode, currentDepth: Int, targetDepth: Int): List<DepthTextInfo> {
+        val results = mutableListOf<DepthTextInfo>()
+
+        // 如果当前深度等于目标深度，检查是否是TextView
+        if (currentDepth == targetDepth) {
+            if (node.className?.contains("TextView") == true) {
+                val text = node.text?.toString()
+                if (!text.isNullOrBlank() && node.isClickable()) {
+                    Log.i(TAG, " ${node.toString()} ")
+                    results.add(
+                        DepthTextInfo(
+                        text = text,
+                        bounds = node.bounds,
+                        depth = currentDepth,
+                        className = node.className
+                    )
+                    )
+                }
+            }
+        } else if (currentDepth < targetDepth) {
+            // 继续递归查找子节点
+            for (i in 0 until node.childCount) {
+                val child = node.childAt(i)
+                if (child != null) {
+                    results.addAll(findTextAtSpecificDepth(child, currentDepth + 1, targetDepth))
+                }
+            }
+        }
+
+        return results
+    }
+
     private suspend fun extractTitleAndContent(): Pair<String, String> {
         var title = ""
         var content = ""
@@ -572,7 +677,7 @@ class XiaohongshuUserSearchAction : Action() {
                 content = moreTextElements.drop(1).joinToString("\n") { it.text?.toString() ?: "" }
             }
         }
-        
+        Log.i(TAG, "extractTitleAndContent: ${textElements}")
         return Pair(title.take(100), content.take(500))
     }
     
@@ -595,212 +700,6 @@ class XiaohongshuUserSearchAction : Action() {
         }
         
         return Triple(likes, favorites, comments)
-    }
-    
-    private suspend fun extractComments(noteNumber: Int) {
-        toast("开始查找评论区域")
-        Log.i(TAG, "开始查找评论区域")
-        
-        // 下滑查找"共xxx条评论"标识
-        var foundCommentCountMarker = false
-        var scrollAttempts = 0
-        val maxScrollAttempts = 8
-        
-        while (!foundCommentCountMarker && scrollAttempts < maxScrollAttempts) {
-            Log.i(TAG, "第${scrollAttempts + 1}次滑动查找评论标识")
-            
-            // 查找"共xxx条评论"的精确模式，支持多种格式
-            val commentCountMarkers = findAllWith { node ->
-                val text = node.text?.toString() ?: ""
-                text.matches(Regex("共\\s*\\d+\\s*条评论")) || // 支持有空格或无空格："共146条评论"、"共 146 条评论"
-                text.matches(Regex("\\d+\\s*条评论")) || // 支持直接数字："146条评论"、"146 条评论"
-                text.contains("条评论") ||
-                text.contains("全部评论") ||
-                text.contains("查看全部") ||
-                text.contains("评论")
-            }
-            
-            if (commentCountMarkers.isNotEmpty()) {
-                foundCommentCountMarker = true
-                val markerText = commentCountMarkers.first().text?.toString() ?: ""
-                Log.i(TAG, "找到评论计数标识: '$markerText'")
-                toast("找到评论标识: $markerText")
-                
-                // 找到标识后，继续向下滑动一小段距离，确保进入评论列表区域
-                Log.i(TAG, "向下滑动进入评论列表区域")
-                swipeViewDown()
-                delay(2000)
-                break
-            } else {
-                // 继续向下滑动查找
-                swipeViewDown()
-                delay(1500)
-                scrollAttempts++
-            }
-        }
-        
-        if (!foundCommentCountMarker) {
-            Log.w(TAG, "经过${maxScrollAttempts}次滑动仍未找到评论计数标识")
-            toast("未找到评论区域标识")
-            return
-        }
-        
-        // 开始抓取评论
-        Log.i(TAG, "开始抓取评论内容")
-        toast("开始抓取评论内容")
-        
-        var commentCount = 0
-        val maxComments = 5
-        var commentScrollAttempts = 0
-        val maxCommentScrollAttempts = 10
-        
-        while (commentCount < maxComments && commentScrollAttempts < maxCommentScrollAttempts) {
-            val commentElements = findRealCommentElements()
-            
-            Log.i(TAG, "本次查找到${commentElements.size}个潜在评论元素")
-            
-            if (commentElements.isEmpty()) {
-                Log.i(TAG, "未找到评论元素，继续向下滑动")
-                swipeViewDown()
-                delay(1500)
-                commentScrollAttempts++
-                continue
-            }
-            
-            var foundNewComments = false
-            
-            for (comment in commentElements) {
-                val commentText = comment.text?.toString()
-                if (!commentText.isNullOrBlank() && commentText.length > 10) {
-                    // 更严格的评论验证
-                    if (isRealCommentStrict(commentText)) {
-                        Log.i(TAG, "笔记${noteNumber} - 评论${commentCount + 1}: $commentText")
-                        commentCount++
-                        foundNewComments = true
-                        
-                        // 检查是否有展开按钮
-                        val expandButton = findExpandButton(comment)
-                        if (expandButton != null) {
-                            Log.i(TAG, "发现展开按钮，点击展开")
-                            expandButton.tryClick()
-                            delay(1000)
-                            
-                            // 重新提取展开后的内容
-                            val expandedText = comment.text?.toString()
-                            if (!expandedText.isNullOrBlank() && expandedText != commentText) {
-                                Log.i(TAG, "笔记${noteNumber} - 评论${commentCount}(展开后): $expandedText")
-                            }
-                        }
-                        
-                        if (commentCount >= maxComments) break
-                    }
-                }
-            }
-            
-            if (commentCount >= maxComments) {
-                break
-            }
-            
-            if (!foundNewComments) {
-                // 没有找到新评论，继续滑动
-                Log.i(TAG, "本次滑动未找到新评论，继续向下查找")
-                swipeViewDown()
-                delay(1500)
-                commentScrollAttempts++
-            } else {
-                // 找到了新评论，重置滑动计数并继续
-                commentScrollAttempts = 0
-                swipeViewDown()
-                delay(1500)
-            }
-        }
-        
-        Log.i(TAG, "评论抓取完成，共抓取${commentCount}条评论")
-        toast("评论抓取完成，共${commentCount}条")
-    }
-    
-    // 更严格的评论验证函数
-    private fun isRealCommentStrict(text: String): Boolean {
-        // 排除明显的非评论内容
-        return !(
-            // 排除包含品牌/产品信息的文本
-            text.contains("ZheOne|钻戒定制|STARZ钻戒|上海小姐姐|杭州钻戒".toRegex()) ||
-            // 排除包含详细产品描述的文本
-            text.contains("1.3克拉|围镶款|主钻|戒托|碎钻".toRegex()) ||
-            // 排除过长的文本（通常是详情内容）
-            text.length > 150 || // 更严格的长度限制
-            // 排除包含过多换行的文本（通常是格式化的详情）
-            text.count { it == '\n' } > 2 ||
-            // 排除包含特定表情符号组合的文本（通常在标题中）
-            text.contains("💥|[赞R]|[黄金薯R]".toRegex()) ||
-            // 排除系统提示信息
-            text.contains("点击查看|展开全文|收起|回复|删除|举报".toRegex()) ||
-            // 排除时间信息
-            text.matches(Regex("\\d+分钟前|\\d+小时前|\\d+天前|\\d+-\\d+-\\d+")) ||
-            // 排除纯数字或特殊符号
-            text.matches(Regex("^[\\d\\s]+$")) ||
-            // 排除太短的文本（可能是按钮或标签）
-            text.length < 8
-        )
-    }
-    
-    private suspend fun findCommentElements(): Array<ViewNode> {
-        return findAllWith { node ->
-            val nodeBounds = android.graphics.Rect()
-            node.getBoundsInScreen(nodeBounds)
-            val text = node.text?.toString()
-            !text.isNullOrBlank() &&
-            text.length > 10 &&
-            !text.contains("点赞|收藏|分享|关注|回复".toRegex()) &&
-            node.isVisibleToUser &&
-            nodeBounds.width() > 300
-        }
-    }
-    
-    private suspend fun findRealCommentElements(): Array<ViewNode> {
-        return findAllWith { node ->
-            val nodeBounds = android.graphics.Rect()
-            node.getBoundsInScreen(nodeBounds)
-            val text = node.text?.toString()
-            !text.isNullOrBlank() &&
-            text.length > 5 &&
-            text.length < 500 && // 避免提取过长的文本（可能是详情）
-            !text.contains("点赞|收藏|分享|关注|回复|条评论|留下你的想法".toRegex()) &&
-            !text.contains("ZheOne|钻戒定制|上海小姐姐|杭州钻戒".toRegex()) && // 排除明显的标题/详情关键词
-            node.isVisibleToUser &&
-            nodeBounds.width() > 200 &&
-            nodeBounds.height() < 200 // 评论通常高度不会太高
-        }
-    }
-
-    private fun isRealComment(text: String): Boolean {
-        // 排除明显的标题和详情内容
-        return !(
-            // 排除包含品牌/产品信息的文本
-            text.contains("ZheOne|钻戒定制|STARZ钻戒|上海小姐姐|杭州钻戒".toRegex()) ||
-            // 排除包含详细产品描述的文本
-            text.contains("1.3克拉|围镶款|主钻|戒托|碎钻".toRegex()) ||
-            // 排除过长的文本（通常是详情内容）
-            text.length > 200 ||
-            // 排除包含过多换行的文本（通常是格式化的详情）
-            text.count { it == '\n' } > 3 ||
-            // 排除包含特定表情符号组合的文本（通常在标题中）
-            text.contains("💥|[赞R]|[黄金薯R]".toRegex())
-        )
-    }
-
-    private suspend fun findExpandButton(commentNode: ViewNode): ViewNode? {
-        // 在评论节点附近查找展开按钮
-        
-        return findAllWith { node ->
-            val nodeBounds = android.graphics.Rect()
-            node.getBoundsInScreen(nodeBounds)
-            node.isClickable() &&
-            (node.text?.toString()?.contains("展开") == true ||
-             node.text?.toString()?.contains("全文") == true ||
-             node.contentDescription?.contains("展开") == true) &&
-            kotlin.math.abs(nodeBounds.top - commentNode.bounds.top) < 100
-        }.firstOrNull()
     }
     
     private suspend fun swipeImageRight() {

@@ -64,26 +64,6 @@ class XiaohongshuCommentExtractor {
             }
 
             Log.i(TAG, "找到评论容器: ${commentContainer.className}, 子元素数量: ${commentContainer.childCount}")
-            commentContainer.children.forEach { node ->
-                node?.let {
-                    Log.i(TAG, "--子评论: ${it.className}, 子元素数量: ${it.childCount}, text:${it.text}")
-                    it.children.forEach{ child ->
-                        child?.let { c ->
-                            Log.i(TAG, "----子评论: ${c.className}, 子元素数量: ${c.childCount}, text:${c.text}")
-                            c.children.forEach{ child1 ->
-                                child1?.let { c1 ->
-                                    Log.i(TAG, "------子评论: ${c1.className}, 子元素数量: ${c1.childCount}, text:${c1.text}")
-                                    c1.children.forEach{ child2 ->
-                                        child2?.let { c2 ->
-                                            Log.i(TAG, "------子评论: ${c2.className}, 子元素数量: ${c2.childCount}, text:${c2.text}")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
 
             // 4. 循环抓取所有评论
             val allComments = extractAllComments(commentContainer)
@@ -273,7 +253,7 @@ class XiaohongshuCommentExtractor {
         var scrollAttempt = 0
         var consecutiveNoNewComments = 0
 
-        while (scrollAttempt < MAX_SCROLL_ATTEMPTS && consecutiveNoNewComments < 3) {
+        while (scrollAttempt < MAX_SCROLL_ATTEMPTS) {
             Log.i(TAG, "第 ${scrollAttempt + 1} 轮扫描评论")
 
             // 1. 先尝试展开所有可展开的内容
@@ -302,19 +282,46 @@ class XiaohongshuCommentExtractor {
                 consecutiveNoNewComments = 0
             }
 
-            // 3. 检查是否到底
-            if (checkReachedBottom(container)) {
-                Log.i(TAG, "已到达评论底部")
+            // 3. 检查是否到底或没有评论
+            if (checkReachedBottom(container) || checkNoComments()) {
+                Log.i(TAG, "已到达评论底部或没有评论")
                 break
             }
 
-            // 4. 滚动加载更多
+            // 4. 如果已经有评论了，连续5轮没新评论就停止
+            // 如果还没有评论，则继续滑动寻找
+            if (allComments.isNotEmpty() && consecutiveNoNewComments >= 5) {
+                Log.i(TAG, "已有评论且连续5轮无新内容，停止抓取")
+                break
+            }
+
+            // 5. 滚动加载更多
             performDownwardScroll()
             delay(2500)
             scrollAttempt++
         }
 
         return allComments.sortedBy { it.position.split("-")[0].toIntOrNull() ?: 0 }
+    }
+
+    /**
+     * 检查是否没有评论
+     */
+    private suspend fun checkNoComments(): Boolean {
+        val noCommentIndicators = findAllWith { node ->
+            val text = node.text?.toString() ?: ""
+            text.contains("还没有评论哦") ||
+                    text.contains("暂无评论") ||
+                    text.contains("没有评论") ||
+                    text.contains("快来抢沙发")
+        }
+
+        if (noCommentIndicators.isNotEmpty()) {
+            Log.i(TAG, "发现无评论标识: ${noCommentIndicators.first().text}")
+            return true
+        }
+
+        return false
     }
 
     /**
@@ -365,31 +372,68 @@ class XiaohongshuCommentExtractor {
     }
 
     /**
-     * 提取当前可见的评论
+     * 提取当前可见的评论 - 调试增强版本
      */
     private suspend fun extractCurrentVisibleComments(container: ViewNode): List<CommentItem> {
         val comments = mutableListOf<CommentItem>()
 
-        // 遍历RecyclerView下的所有FrameLayout
+        Log.i(TAG, "开始扫描RecyclerView的 ${container.childCount} 个子元素")
+
+        // 遍历RecyclerView下的所有子元素
         for (i in 0 until container.childCount) {
-            val frameLayout = container.childAt(i)
-            if (frameLayout != null &&
-                frameLayout.className?.contains("FrameLayout") == true &&
-                frameLayout.isVisibleToUser &&
-                frameLayout.bounds.height() > 50) {
+            val child = container.childAt(i)
+            if (child != null) {
+                Log.i(TAG, "检查子元素 $i: ${child.className}, visible=${child.isVisibleToUser}, height=${child.bounds.height()}")
 
-                // 在FrameLayout下查找LinearLayout（评论项）
-                val linearLayouts = findLinearLayoutsInFrame(frameLayout)
+                if (child.isVisibleToUser && child.bounds.height() > 50) {
+                    when {
+                        // 处理FrameLayout类型的子元素
+                        child.className?.contains("FrameLayout") == true -> {
+                            Log.i(TAG, "处理FrameLayout子元素 $i")
+                            val linearLayouts = findLinearLayoutsInFrame(child)
+                            Log.i(TAG, "在FrameLayout中找到 ${linearLayouts.size} 个LinearLayout")
+                            for ((index, linearLayout) in linearLayouts.withIndex()) {
+                                val commentItem = parseCommentFromLinearLayout(linearLayout, i, index)
+                                if (commentItem != null) {
+                                    comments.add(commentItem)
+                                    Log.i(TAG, "从FrameLayout解析到评论: ${commentItem.username} - ${commentItem.content}")
+                                }
+                            }
+                        }
 
-                for ((index, linearLayout) in linearLayouts.withIndex()) {
-                    val commentItem = parseCommentFromLinearLayout(linearLayout, i, index)
-                    if (commentItem != null) {
-                        comments.add(commentItem)
+                        // 处理直接的LinearLayout评论项 - 关键修复！
+                        child.className?.contains("LinearLayout") == true -> {
+                            Log.i(TAG, "处理直接LinearLayout子元素 $i")
+                            val commentItem = parseCommentFromLinearLayout(child, i, 0)
+                            if (commentItem != null) {
+                                comments.add(commentItem)
+                                Log.i(TAG, "从直接LinearLayout解析到评论: ${commentItem.username} - ${commentItem.content}")
+                            }
+                        }
+
+                        // 处理其他可能包含评论的容器
+                        else -> {
+                            Log.i(TAG, "处理其他类型容器 $i: ${child.className}")
+                            val linearLayouts = findLinearLayoutsInFrame(child)
+                            Log.i(TAG, "在其他容器中找到 ${linearLayouts.size} 个LinearLayout")
+                            for ((index, linearLayout) in linearLayouts.withIndex()) {
+                                val commentItem = parseCommentFromLinearLayout(linearLayout, i, index)
+                                if (commentItem != null) {
+                                    comments.add(commentItem)
+                                    Log.i(TAG, "从其他容器解析到评论: ${commentItem.username} - ${commentItem.content}")
+                                }
+                            }
+                        }
                     }
+                } else {
+                    Log.i(TAG, "跳过子元素 $i: visible=${child.isVisibleToUser}, height=${child.bounds.height()}")
                 }
+            } else {
+                Log.i(TAG, "子元素 $i 为空")
             }
         }
 
+        Log.i(TAG, "本轮共解析到 ${comments.size} 条评论")
         return comments
     }
 
@@ -423,7 +467,7 @@ class XiaohongshuCommentExtractor {
     }
 
     /**
-     * 从LinearLayout解析评论
+     * 从LinearLayout解析评论 - 改进版本
      */
     private suspend fun parseCommentFromLinearLayout(linearLayout: ViewNode, frameIndex: Int, linearIndex: Int): CommentItem? {
         try {
@@ -433,25 +477,58 @@ class XiaohongshuCommentExtractor {
                 return null
             }
 
-            val username = extractUsername(textNodes)
-            val content = extractContent(textNodes)
-            val timeInfo = extractTimeInfo(textNodes)
-            val likes = extractLikes(textNodes)
-            val isAuthorReply = checkAuthorReply(textNodes)
+            Log.i(TAG, "解析LinearLayout中的文本节点: ${textNodes.map { "\"${it.text}\"" }}")
 
-            // 如果没有用户名或内容，可能不是评论
-            if (username.isBlank() && content.isBlank()) {
+            // 查找包含完整评论信息的文本节点
+            val mainTextNode = textNodes.find { textNode ->
+                val text = textNode.text
+                text.contains("回复") && (
+                        text.matches(Regex(".*\\d{4}-\\d{2}-\\d{2}.*")) ||
+                                text.contains("天前") ||
+                                text.contains("小时前") ||
+                                text.contains("分钟前")
+                        )
+            }
+
+            if (mainTextNode == null) {
+                Log.i(TAG, "未找到包含完整评论信息的文本节点，跳过")
                 return null
             }
 
-            // 通过左边距判断是否为回复（回复评论通常有缩进）
+            val mainText = mainTextNode.text
+            Log.i(TAG, "找到主要评论文本: \"$mainText\"")
+
+            // 跳过非评论内容
+            if (mainText.contains("条评论") || mainText.contains("写评论") || mainText.length < 5) {
+                Log.i(TAG, "跳过非评论内容: $mainText")
+                return null
+            }
+
+            // 从完整文本中提取各个字段
+            val content = extractContentFromText(mainText)
+            val time = extractTimeFromText(mainText)
+
+            // 查找用户名（可能在单独的文本节点中）
+            val username = extractUsernameFromNodes(textNodes, mainText)
+
+            // 查找点赞数
+            val likes = extractLikes(textNodes)
+
+            // 检查是否为作者回复
+            val isAuthorReply = checkAuthorReply(textNodes)
+
+            if (content.isBlank()) {
+                Log.i(TAG, "内容为空，跳过: mainText=$mainText")
+                return null
+            }
+
             val isReply = isReplyComment(linearLayout)
 
-            return CommentItem(
+            val comment = CommentItem(
                 username = username,
                 content = content,
-                time = timeInfo.time,
-                timeOrder = timeInfo.order,
+                time = time,
+                timeOrder = parseTimeToOrder(time),
                 likes = likes,
                 isAuthorReply = isAuthorReply,
                 isReply = isReply,
@@ -462,10 +539,87 @@ class XiaohongshuCommentExtractor {
                 nodeReference = linearLayout
             )
 
+            Log.i(TAG, "成功解析评论: username=$username, content=$content, time=$time, likes=$likes")
+            return comment
+
         } catch (e: Exception) {
             Log.e(TAG, "解析评论失败: ${e.message}")
             return null
         }
+    }
+
+    /**
+     * 从文本中提取评论内容
+     */
+    private fun extractContentFromText(text: String): String {
+        // 尝试不同的模式匹配
+        val patterns = listOf(
+            // 模式: 内容 日期 回复
+            Regex("^(.+?)\\s+\\d{4}-\\d{2}-\\d{2}\\s+回复$"),
+            // 模式: 内容 相对时间 地点 回复
+            Regex("^(.+?)\\s+\\d+[天小时分钟]前\\s+\\S+\\s+回复$"),
+            // 模式: 内容 相对时间 回复
+            Regex("^(.+?)\\s+\\d+[天小时分钟]前\\s+回复$"),
+            // 模式: 内容 回复
+            Regex("^(.+?)\\s+回复$")
+        )
+
+        for (pattern in patterns) {
+            val match = pattern.find(text.trim())
+            if (match != null) {
+                val content = match.groupValues[1].trim()
+                if (content.isNotEmpty()) {
+                    return content
+                }
+            }
+        }
+
+        // 如果都没匹配到，返回去掉"回复"的文本
+        return text.replace("回复", "").trim()
+    }
+
+    /**
+     * 从文本中提取时间
+     */
+    private fun extractTimeFromText(text: String): String {
+        val timePatterns = listOf(
+            Regex("(\\d{4}-\\d{2}-\\d{2})"),
+            Regex("(\\d+天前)"),
+            Regex("(\\d+小时前)"),
+            Regex("(\\d+分钟前)")
+        )
+
+        for (pattern in timePatterns) {
+            val match = pattern.find(text)
+            if (match != null) {
+                return match.groupValues[1]
+            }
+        }
+
+        return "未知时间"
+    }
+
+    /**
+     * 从文本节点中提取用户名
+     */
+    private fun extractUsernameFromNodes(textNodes: List<TextNodeInfo>, mainText: String): String {
+        // 查找不包含"回复"、时间等信息的短文本节点
+        val usernameCandidates = textNodes.filter { textNode ->
+            val text = textNode.text
+            text != mainText && // 不是主要评论文本
+                    text.length in 1..20 &&
+                    !text.contains("回复") &&
+                    !text.contains("前") &&
+                    !text.contains("2024") &&
+                    !text.contains("2023") &&
+                    !text.matches(Regex("^\\d+$")) &&
+                    !text.contains("条评论") &&
+                    !text.contains("展开") &&
+                    text.isNotBlank()
+        }.sortedBy { it.bounds.top }
+
+        val username = usernameCandidates.firstOrNull()?.text
+        return username ?: "匿名用户"
     }
 
     /**

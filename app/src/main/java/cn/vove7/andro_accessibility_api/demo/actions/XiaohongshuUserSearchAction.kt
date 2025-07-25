@@ -40,7 +40,7 @@ class XiaohongshuUserSearchAction : Action() {
             clickSearchButton()
             delay(2000)
             
-            inputUserId("jin809965274")
+            inputUserId("Ayue168_")
             delay(1000)
             
             executeSearch()
